@@ -66,12 +66,12 @@ export default function App() {
     const models = (data.models || [])
       .filter((model: { name?: string; supportedGenerationMethods?: string[] }) => {
         if (!model.name) return false;
-        const id = model.name.replace(/^models\\//, "").toLowerCase();
+        const id = model.name.replace(/^models\//, "").toLowerCase();
         if (!/^(gemini|gemma)-/.test(id) || /(image|tts|audio|embedding|veo|lyria|deep-research|antigravity)/.test(id)) return false;
         const methods = model.supportedGenerationMethods || [];
         return methods.length === 0 || methods.includes("generateContent") || methods.includes("interactions");
       })
-      .map((model: { name: string }) => model.name.replace(/^models\\//, ""));
+      .map((model: { name: string }) => model.name.replace(/^models\//, ""));
     if (!models.length) throw new Error("Google returned no text-capable Gemini/Gemma models for this API key.");
     return [...new Set(models)].sort((a, b) => a.localeCompare(b));
   }
