@@ -13,7 +13,10 @@ A search-first React app: describe what you want in plain English, let an AI pro
 - Editable query and result limit before execution
 - Result previews, raw JSON view, copy, and JSON export
 - Multiple API keys per provider, enable/disable, delete, and connection checks
-- Gemini model discovery from the API key's available model list, with automatic fallback across text-capable models on temporary overload/model errors
+- Dynamic model discovery for Gemini, OpenRouter, xAI/Grok, and Groq using each provider's model-list API
+- Automatic fallback across discovered models when a selected model is unavailable, overloaded, or rate-limited
+- AI-generated, detailed search strategies that expand short or vague prompts while preserving explicit targets and search operators
+- Optional Freedom mode (off by default) to bypass AI planning and search with the original query
 - Visible model attribution showing which AI model actually generated the plan
 - Browser-local settings and recent searches
 - Built-in help drawer with provider key links
@@ -39,7 +42,7 @@ Open **Settings** in the app and add:
 - An AI key for Gemini, OpenRouter, or Grok (optional; without one, a basic search plan is created from your prompt).
 - A Firecrawl key to execute searches.
 
-Gemini model discovery calls the official `GET /v1beta/models` endpoint with the user's key and filters to text-capable Gemini/Gemma models (excluding image, audio, embedding, and agent-only models). Choose a model in Settings. If a selected model is overloaded or unavailable, lazzzySearch tries the remaining discovered models for that key and shows which model successfully generated the plan. Gemini planning uses the Interactions API (`POST /v1beta/interactions`) with structured JSON output and `store=false`. OpenRouter and xAI models remain user-editable.
+Model discovery is available for all AI providers. Gemini uses `GET /v1beta/models` and filters to text-capable Gemini/Gemma models. OpenRouter uses `GET /api/v1/models`, xAI uses `GET /v1/models`, and Groq uses `GET /openai/v1/models`. Select a discovered model in Settings. When a selected model is unavailable, overloaded, or rate-limited, the planner tries other models returned for that same API key and displays the model actually used. Gemini planning uses the Interactions API (`POST /v1beta/interactions`) with `store=false`; OpenRouter, xAI, and Groq use their OpenAI-compatible chat completions APIs. Freedom mode is an optional checkbox and is off by default. When off, the selected AI creates a detailed strategy from even short queries; when on, the app bypasses AI and preserves the original query.
 
 ## Deploy to Vercel
 
@@ -60,7 +63,7 @@ Browser-to-provider requests may also be affected by provider CORS policies, bro
 ## Next
 
 1. Verify provider CORS behavior and add a small server-side proxy if required.
-2. Add model discovery for OpenRouter and xAI, plus reliable free/paid pricing labels.
+2. Add provider-aware pricing labels and model capability metadata.
 3. Add Firecrawl scrape, crawl, and map operations.
 4. Add database-backed user accounts and encrypted per-user key storage.
 5. Add robust validation, retries, and automated tests.
