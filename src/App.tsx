@@ -137,10 +137,13 @@ export default function App() {
       for (const model of ordered) {
         attempted.push(model);
         setModelAttempts([...attempted]);
-        const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-          method: "POST",
-          headers: { "x-goog-api-key": activeAi.key, "Content-Type": "application/json" },
-          body: JSON.stringify({
+        let response: Response;
+        let data: any;
+        try {
+          response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+            method: "POST",
+            headers: { "x-goog-api-key": activeAi.key, "Content-Type": "application/json" },
+            body: JSON.stringify({
             model,
             input: instruction,
             system_instruction: system,
@@ -159,10 +162,14 @@ export default function App() {
               }
             },
             generation_config: { temperature: 0.2, max_output_tokens: 1024 },
-            store: false
-          })
-        });
-        const data = await response.json();
+              store: false
+            })
+          });
+          data = await response.json();
+        } catch (networkError) {
+          failures.push(model + ": " + errorMessage(networkError));
+          continue;
+        }
         if (response.ok) {
           const output = (data.steps || [])
             .filter((step: { type?: string }) => step.type === "model_output")
@@ -245,7 +252,7 @@ export default function App() {
     <main className="main">
       <section className="hero"><div className="eyebrow"><Sparkles size={14}/> YOUR SEARCH, WITH A LITTLE AI</div><h1>Search less.<br/><span>Find more.</span></h1><p className="subhead">Tell us what you're looking for. We'll figure out how to find it.</p>
         <div className="search-card"><div className="search-input-wrap"><Search size={20}/><textarea value={prompt} onChange={e => setPrompt(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); createPlan(); } }} placeholder="Search anything, anywhere... e.g. Find all posts about Kaboom on Reddit" rows={2}/></div><div className="search-bottom"><div className="provider-select"><WandSparkles size={15}/><select value={provider} onChange={e => setProvider(e.target.value as Provider)}>{aiProviders.map(p => <option key={p} value={p}>{p}</option>)}</select><span className="key-indicator" title={activeAi ? "AI key ready" : "No AI key; direct search plan"}>{activeAi ? <Check size={13}/> : "no key"}</span></div><button className="search-button" onClick={createPlan} disabled={!prompt.trim() || busy !== null}>{busy === "plan" ? <LoaderCircle className="spin" size={17}/> : <Sparkles size={16}/>} Plan search <span>↗</span></button></div></div>
-        {activeAi && <div className="active-model">AI model: <strong>{activeAi.model || defaults[provider] || "Choose in Settings"}</strong>{modelUsed && modelUsed !== activeAi.model && <span> · actually used: {modelUsed}</span>}</div>}
+        {activeAi && <div className="active-model">AI model: <strong>{activeAi.model || defaults[provider] || "Choose in Settings"}</strong>{busy === "plan" && modelAttempts.length > 0 && <span> · trying: {modelAttempts.join(" → ")}</span>}{modelUsed && modelUsed !== activeAi.model && <span> · actually used: {modelUsed}</span>}</div>}
         <div className="quick-hints"><span>Try:</span>{["Find PDFs about RAG agents","Search Reddit for browser automation","Find recent AI engineer jobs in India"].map(s => <button key={s} onClick={() => setPrompt(s)}>{s}</button>)}</div>
       </section>
 
