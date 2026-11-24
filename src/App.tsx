@@ -81,12 +81,36 @@ export default function App() {
 
   async function discoverProviderModels(p: Provider, key: string): Promise<string[]> {
     if (p === "Gemini") return discoverGeminiModels(key);
-    const urls: Record<string,string> = { OpenRouter:"https://openrouter.ai/api/v1/models", Grok:"https://api.x.ai/v1/models", Groq:"https://api.groq.com/openai/v1/models" };
-    const r=await fetch(urls[p],{headers:{Authorization:"Bearer "+key}}); const d=await r.json();
-    if(!r.ok) throw new Error(d.error?.message || p+" model discovery failed ("+r.status+").");
-    const ids: string[] = ((d.data || []) as Array<{id?:string}>).map(m=>m.id).filter((x): x is string => typeof x === "string" && !!x);
-    if(!ids.length) throw new Error(p+" returned no models for this key.");
-    return Array.from(new Set<string>(ids)).sort((a,b)=>a.localeCompare(b));
+    const urls: Partial<Record<Provider,string>> = {
+      OpenRouter: "https://openrouter.ai/api/v1/models",
+      Grok: "https://api.x.ai/v1/models",
+      Groq: "https://api.groq.com/openai/v1/models",
+      SiliconFlow: "https://api.siliconflow.com/v1/models"
+    };
+    const endpoint = urls[p];
+    if (!endpoint) throw new Error("Model discovery is not supported for " + p + ".");
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: { Authorization: "Bearer " + key.trim(), Accept: "application/json" }
+    });
+    const body = await response.text();
+    let data: any = {};
+    try { data = body ? JSON.parse(body) : {}; } catch { data = { message: body }; }
+    if (!response.ok) {
+      const detail = data.error?.message || data.message || data.error || body || "No error details returned.";
+      const hint = response.status === 401
+        ? " Authentication failed: confirm this is an active " + p + " API key, not a console/session token."
+        : response.status === 403
+          ? " Access denied: check account status, API access, and permissions."
+          : response.status === 400
+            ? " The provider rejected its model-list request. Check key type and API access."
+            : "";
+      throw new Error(p + " model discovery failed (HTTP " + response.status + "). " + String(detail) + hint);
+    }
+    const entries = (data.data || data.models || []) as Array<{ id?: string; name?: string }>;
+    const ids = entries.map(model => model.id || model.name).filter((id): id is string => typeof id === "string" && !!id);
+    if (!ids.length) throw new Error(p + " returned no models for this key. Response: " + body.slice(0, 300));
+    return Array.from(new Set(ids)).sort((a, b) => a.localeCompare(b));
   }
   async function loadModelsForKey(item: ApiKey) {
     setBusy("test");setError("");setNotice("");
