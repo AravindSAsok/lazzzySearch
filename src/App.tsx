@@ -6,7 +6,7 @@ type ApiKey = { id: string; provider: Provider; label: string; key: string; mode
 type Plan = { query: string; limit: number; sources: string[]; intent: string };
 type SearchResult = { url?: string; title?: string; description?: string; markdown?: string; content?: string; metadata?: Record<string, unknown>; [key: string]: unknown };
 const STORE = "lazzzys-search-v1";
-const defaults: Record<Provider, string> = { Gemini: "gemini-2.5-flash", OpenRouter: "openrouter/auto", Grok: "grok-3-mini", Firecrawl: "" };
+const defaults: Record<Provider, string> = { Gemini: "", OpenRouter: "openrouter/auto", Grok: "grok-3-mini", Firecrawl: "" };
 const providerInfo: Record<Provider, { hint: string; url: string }> = {
   Gemini: { hint: "Google AI Studio", url: "https://aistudio.google.com/apikey" },
   OpenRouter: { hint: "OpenRouter", url: "https://openrouter.ai/keys" },
@@ -36,6 +36,8 @@ export default function App() {
   const [draftKey, setDraftKey] = useState("");
   const [draftModel, setDraftModel] = useState(defaults.Gemini);
   const [showRaw, setShowRaw] = useState(false);
+  const [geminiModels, setGeminiModels] = useState<Record<string, string[]>>({});
+  const [draftGeminiModels, setDraftGeminiModels] = useState<string[]>([]);
 
   useEffect(() => { localStorage.setItem(STORE + ":keys", JSON.stringify(keys)); }, [keys]);
   useEffect(() => { localStorage.setItem(STORE + ":provider", JSON.stringify(provider)); }, [provider]);
@@ -48,10 +50,47 @@ export default function App() {
   function addKey() {
     if (!draftKey.trim()) return;
     setKeys(prev => [...prev, { id: makeId(), provider: draftProvider, label: draftLabel.trim() || draftProvider + " key " + (prev.filter(k => k.provider === draftProvider).length + 1), key: draftKey.trim(), model: draftModel || defaults[draftProvider], enabled: true }]);
-    setDraftKey(""); setDraftLabel(""); setNotice("Key saved in this browser.");
+    setDraftKey(""); setDraftLabel(""); setDraftGeminiModels([]); setNotice("Key saved in this browser.");
   }
   function removeKey(id: string) { setKeys(prev => prev.filter(k => k.id !== id)); }
   function updateKey(id: string, patch: Partial<ApiKey>) { setKeys(prev => prev.map(k => k.id === id ? { ...k, ...patch } : k)); }
+
+  async function discoverGeminiModels(apiKey: string): Promise<string[]> {
+    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models?key=" + encodeURIComponent(apiKey));
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error?.message || "Gemini could not list models (" + response.status + ").");
+    const models = (data.models || [])
+      .filter((model: { name?: string; supportedGenerationMethods?: string[] }) =>
+        model.name && (!model.supportedGenerationMethods?.length || model.supportedGenerationMethods.includes("generateContent"))
+      )
+      .map((model: { name: string }) => model.name.replace(/^models\//, ""));
+    if (!models.length) throw new Error("No text-generation models were returned for this Gemini key.");
+    return models.sort((a: string, b: string) => a.localeCompare(b));
+  }
+
+  async function loadModelsForKey(item: ApiKey) {
+    setBusy("test"); setError(""); setNotice("");
+    try {
+      const models = await discoverGeminiModels(item.key);
+      setGeminiModels(prev => ({ ...prev, [item.id]: models }));
+      const selected = models.includes(item.model) ? item.model : (models.includes("gemini-3.8-flash") ? "gemini-3.8-flash" : models[0]);
+      updateKey(item.id, { model: selected });
+      setNotice("Loaded " + models.length + " Gemini models for " + item.label + ".");
+    } catch (e) { setError(errorMessage(e)); }
+    finally { setBusy(null); }
+  }
+
+  async function loadDraftModels() {
+    if (!draftKey.trim()) { setError("Paste your Gemini API key first."); return; }
+    setBusy("test"); setError(""); setNotice("");
+    try {
+      const models = await discoverGeminiModels(draftKey.trim());
+      setDraftGeminiModels(models);
+      setDraftModel(models.includes("gemini-3.8-flash") ? "gemini-3.8-flash" : models[0]);
+      setNotice("Loaded " + models.length + " models available to this key.");
+    } catch (e) { setError(errorMessage(e)); }
+    finally { setBusy(null); }
+  }
 
   async function testKey(item: ApiKey) {
     setBusy("test"); setError(""); setNotice("");
@@ -78,9 +117,41 @@ export default function App() {
     if (!activeAi) throw new Error("Add and enable an API key for " + provider + " in Settings first.");
     const system = "You are the planning assistant for lazzzySearch. Turn the user's request into a concise Firecrawl web search plan. Return ONLY valid JSON with keys query (string), limit (integer 1-50), sources (array containing web, images, news where relevant; default [web]), intent (short string). Preserve the user's target website/domain and search terms. If a URL is present, include it in query. Do not invent results.";
     if (provider === "Gemini") {
-      const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(activeAi.model || defaults.Gemini) + ":generateContent?key=" + encodeURIComponent(activeAi.key), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents: [{ role: "user", parts: [{ text: instruction }] }], generationConfig: { responseMimeType: "application/json", temperature: 0.2 } }) });
-      const data = await response.json(); if (!response.ok) throw new Error(data.error?.message || "Gemini request failed.");
-      return data.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text || "").join("") || "";
+      if (!activeAi.model) throw new Error("Choose a Gemini model in Settings. Load the models available to your API key first.");
+      const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+        method: "POST",
+        headers: { "x-goog-api-key": activeAi.key, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: activeAi.model,
+          system_instruction: system,
+          input: instruction,
+          response_format: {
+            type: "text",
+            mime_type: "application/json",
+            schema: {
+              type: "object",
+              properties: {
+                query: { type: "string" },
+                limit: { type: "integer" },
+                sources: { type: "array", items: { type: "string" } },
+                intent: { type: "string" }
+              },
+              required: ["query", "limit", "sources", "intent"]
+            }
+          },
+          generation_config: { temperature: 0.2, max_output_tokens: 1024 }
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error?.message || "Gemini Interactions request failed.");
+      const output = (data.steps || [])
+        .filter((step: { type?: string }) => step.type === "model_output")
+        .flatMap((step: { content?: Array<{ type?: string; text?: string }> }) => step.content || [])
+        .filter((part: { type?: string; text?: string }) => part.type === "text")
+        .map((part: { text?: string }) => part.text || "")
+        .join("");
+      if (!output) throw new Error("Gemini returned no text output. Check that the selected model supports text responses.");
+      return output;
     }
     const endpoint = provider === "OpenRouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://api.x.ai/v1/chat/completions";
     const response = await fetch(endpoint, { method: "POST", headers: { Authorization: "Bearer " + activeAi.key, "Content-Type": "application/json" }, body: JSON.stringify({ model: activeAi.model || defaults[provider], messages: [{ role: "system", content: system }, { role: "user", content: instruction }], temperature: 0.2, response_format: { type: "json_object" } }) });
@@ -153,8 +224,8 @@ export default function App() {
     </main>
 
     {(showSettings || showHelp) && <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) { setShowSettings(false); setShowHelp(false); } }}><aside className="drawer"><div className="drawer-head"><div><span className="section-kicker">{showSettings ? "YOUR CONNECTIONS" : "A QUICK GUIDE"}</span><h2>{showSettings ? "Settings" : "How it works"}</h2></div><button className="icon-btn" onClick={() => { setShowSettings(false); setShowHelp(false); }}><X size={18}/></button></div>
-      {showSettings ? <><p className="drawer-copy">Bring your own API keys. They're saved only in this browser for now.</p><div className="key-list">{keys.map(k => <div className="key-row" key={k.id}><div className="key-icon"><KeyRound size={16}/></div><div className="key-details"><strong>{k.label}</strong><span>{k.provider} · {k.model || "default model"} · ••••••••</span></div><label className="toggle"><input type="checkbox" checked={k.enabled} onChange={e => updateKey(k.id, { enabled: e.target.checked })}/><span/></label><button className="tiny-icon" onClick={() => testKey(k)} title="Test key" disabled={busy !== null}><Check size={15}/></button><button className="tiny-icon danger" onClick={() => removeKey(k.id)} title="Delete key"><Trash2 size={15}/></button></div>)}</div>
-      <div className="add-key"><h3><Plus size={16}/> Add an API key</h3><label className="field-label">Provider</label><select value={draftProvider} onChange={e => { const p = e.target.value as Provider; setDraftProvider(p); setDraftModel(defaults[p]); }}><option>Gemini</option><option>OpenRouter</option><option>Grok</option><option>Firecrawl</option></select><label className="field-label">Label (optional)</label><input value={draftLabel} onChange={e => setDraftLabel(e.target.value)} placeholder="My personal key"/>{draftProvider !== "Firecrawl" && <><label className="field-label">Model</label><input value={draftModel} onChange={e => setDraftModel(e.target.value)} placeholder="Model ID"/></>}<label className="field-label">API key</label><input type="password" autoComplete="off" value={draftKey} onChange={e => setDraftKey(e.target.value)} placeholder="Paste your API key"/><button className="run-button" onClick={addKey} disabled={!draftKey.trim()}><Plus size={16}/> Save key</button><p className="micro-copy">Keys remain in localStorage on this device. Anyone with access to this browser profile may be able to inspect them. Avoid shared devices.</p></div>
+      {showSettings ? <><p className="drawer-copy">Bring your own API keys. They're saved only in this browser for now.</p><div className="key-list">{keys.map(k => <div className="key-row" key={k.id}><div className="key-icon"><KeyRound size={16}/></div><div className="key-details"><strong>{k.label}</strong><span>{k.provider} · {k.model || "choose a model"} · ••••••••</span>{k.provider === "Gemini" && geminiModels[k.id] && <select aria-label={"Model for " + k.label} value={k.model} onChange={e => updateKey(k.id, { model: e.target.value })}>{geminiModels[k.id].map(model => <option key={model} value={model}>{model}</option>)}</select>}</div>{k.provider === "Gemini" && <button className="tiny-icon" onClick={() => loadModelsForKey(k)} title="Load available Gemini models" disabled={busy !== null}><WandSparkles size={14}/></button>}<label className="toggle"><input type="checkbox" checked={k.enabled} onChange={e => updateKey(k.id, { enabled: e.target.checked })}/><span/></label><button className="tiny-icon" onClick={() => testKey(k)} title="Test key" disabled={busy !== null}><Check size={15}/></button><button className="tiny-icon danger" onClick={() => removeKey(k.id)} title="Delete key"><Trash2 size={15}/></button></div>)}</div>
+      <div className="add-key"><h3><Plus size={16}/> Add an API key</h3><label className="field-label">Provider</label><select value={draftProvider} onChange={e => { const p = e.target.value as Provider; setDraftProvider(p); setDraftModel(defaults[p]); setDraftGeminiModels([]); }}><option>Gemini</option><option>OpenRouter</option><option>Grok</option><option>Firecrawl</option></select><label className="field-label">Label (optional)</label><input value={draftLabel} onChange={e => setDraftLabel(e.target.value)} placeholder="My personal key"/>{draftProvider !== "Firecrawl" && <><label className="field-label">Model</label><div className="model-load-row"><input value={draftModel} onChange={e => setDraftModel(e.target.value)} placeholder={draftProvider === "Gemini" ? "Load models or enter a model ID" : "Model ID"}/>{draftProvider === "Gemini" && <button type="button" className="text-btn" onClick={loadDraftModels} disabled={busy !== null || !draftKey.trim()}>{busy === "test" ? "Loading…" : "Load models"}</button>}</div>{draftProvider === "Gemini" && draftGeminiModels.length > 0 && <select className="model-picker" value={draftModel} onChange={e => setDraftModel(e.target.value)}>{draftGeminiModels.map(model => <option key={model} value={model}>{model}</option>)}</select></>}<label className="field-label">API key</label><input type="password" autoComplete="off" value={draftKey} onChange={e => setDraftKey(e.target.value)} placeholder="Paste your API key"/><button className="run-button" onClick={addKey} disabled={!draftKey.trim()}><Plus size={16}/> Save key</button><p className="micro-copy">Keys remain in localStorage on this device. Anyone with access to this browser profile may be able to inspect them. Avoid shared devices.</p></div>
       <div className="provider-links"><h3>Get an API key</h3>{(["Gemini","OpenRouter","Grok","Firecrawl"] as Provider[]).map(p => <a key={p} href={providerInfo[p].url} target="_blank" rel="noreferrer">{p} <ArrowUpRight size={13}/></a>)}</div>
       </> : <div className="guide-content"><p>lazzzySearch takes your plain-English request, turns it into a search plan, and asks Firecrawl to find matching pages and content.</p><div className="guide-step"><span>01</span><div><strong>Describe what you want</strong><p>Tell us the topic, website, filters, or file type. A URL or domain helps narrow the target.</p></div></div><div className="guide-step"><span>02</span><div><strong>Let AI make a plan</strong><p>Choose Gemini, OpenRouter, or Grok and add a key in Settings. Without an AI key, the app creates a simple direct-search plan.</p></div></div><div className="guide-step"><span>03</span><div><strong>Search with Firecrawl</strong><p>Add a Firecrawl key. Review the query and result limit, then run the search.</p></div></div><div className="guide-step"><span>04</span><div><strong>Keep what you find</strong><p>Open sources, copy results, or export the raw response as JSON.</p></div></div><h3>Official docs & keys</h3>{[["Firecrawl docs","https://docs.firecrawl.dev/"],["Gemini API docs","https://ai.google.dev/gemini-api/docs"],["OpenRouter models","https://openrouter.ai/models"],["xAI API docs","https://docs.x.ai/"]].map(([name, url]) => <a className="guide-link" href={url} target="_blank" rel="noreferrer" key={url}>{name}<ArrowUpRight size={14}/></a>)}<div className="privacy-note"><strong>Local-first MVP</strong><p>No account or database. Keys and recent searches are stored in this browser only. Provider requests are sent directly from your browser to the selected AI provider and Firecrawl. This means keys are not protected by a server-side vault; use a personal device and rotate keys if needed.</p></div></div>}
     </aside></div>}
