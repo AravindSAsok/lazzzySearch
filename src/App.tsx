@@ -73,7 +73,7 @@ export default function App() {
       })
       .map((model: { name: string }) => model.name.replace(/^models\//, ""));
     if (!models.length) throw new Error("Google returned no text-capable Gemini/Gemma models for this API key.");
-    return [...new Set(models)].sort((a, b) => a.localeCompare(b));
+    return Array.from(new Set<string>(models as string[])).sort((a: string, b: string) => a.localeCompare(b));
   }
 
   async function loadModelsForKey(item: ApiKey) {
@@ -207,8 +207,10 @@ export default function App() {
     try {
       let parsed: Plan;
       if (activeAi) {
-        const text = await askAI(prompt);
-        parsed = JSON.parse(text.replace(/^```(?:json)?|\`\`\`$/g, "").trim()) as Plan;
+        const aiResult = await askAI(prompt);
+        parsed = JSON.parse(aiResult.text.replace(/^\`\`\`(?:json)?|\`\`\`$/g, "").trim()) as Plan;
+        setModelUsed(aiResult.model);
+        setModelAttempts(aiResult.attempts);;
       } else {
         const url = prompt.match(/https?:\/\/[^\s]+/)?.[0];
         parsed = { query: prompt, limit: 10, sources: ["web"], intent: url ? "Search the supplied website or URL" : "Search the web for the requested information" };
