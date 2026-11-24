@@ -205,21 +205,18 @@ export default function App() {
     if (!prompt.trim()) return;
     setBusy("plan"); setError(""); setNotice(""); setPlan(null); setResults([]); setRaw(null); setModelUsed(""); setModelAttempts([]);
     try {
-      let parsed: Plan;
-      if (activeAi) {
-        const aiResult = await askAI(prompt);
-        parsed = JSON.parse(aiResult.text.replace(/^\`\`\`(?:json)?|\`\`\`$/g, "").trim()) as Plan;
-        setModelUsed(aiResult.model);
-        setModelAttempts(aiResult.attempts);;
-      } else {
-        const url = prompt.match(/https?:\/\/[^\s]+/)?.[0];
-        parsed = { query: prompt, limit: 10, sources: ["web"], intent: url ? "Search the supplied website or URL" : "Search the web for the requested information" };
-        setNotice("No AI key enabled. Created a direct search plan from your prompt.");
-      }
-      parsed.query = String(parsed.query || prompt).slice(0, 1000);
-      parsed.limit = Math.min(50, Math.max(1, Number(parsed.limit) || 10));
-      parsed.sources = Array.isArray(parsed.sources) ? parsed.sources : ["web"];
-      parsed.intent = String(parsed.intent || "Search for matching pages");
+      // Freedom-first: never let an AI planner rewrite, filter, classify, or reject the user's search.
+      // Keep the exact prompt visible for review; only the explicit site:any wildcard is normalized at execution.
+      const url = prompt.match(/https?:\/\/[^\s]+/)?.[0];
+      const parsed: Plan = {
+        query: prompt.slice(0, 1000),
+        limit: 10,
+        sources: ["web"],
+        intent: url ? "Search the supplied URL/domain and the wider web as requested" : "Direct web search using the user's exact query"
+      };
+      setModelUsed("");
+      setModelAttempts([]);
+      setNotice("Freedom mode: AI planning is bypassed. Your search terms and operators are preserved.");
       setPlan(parsed); setShowPlan(true);
     } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(null); }
@@ -230,18 +227,29 @@ export default function App() {
     if (!firecrawl) { setError("Add and enable a Firecrawl API key in Settings to run searches."); setShowSettings(true); return; }
     setBusy("search"); setError(""); setNotice(""); setResults([]); setRaw(null);
     try {
-      const response = await fetch("https://api.firecrawl.dev/v2/search", { method: "POST", headers: { Authorization: "Bearer " + firecrawl.key, "Content-Type": "application/json" }, body: JSON.stringify({ query: plan.query.replace(/\\bsite:any\\b/gi, "").replace(/\\s+/g, " ").trim(), limit: plan.limit, sources: (plan.sources.length ? plan.sources : ["web"]).map(source => ({ type: source })), scrapeOptions: { formats: [{ type: "markdown" }] } }) });
+      const submittedQuery = plan.query.replace(/(^|\\s)site:any(?=\\s|$)/gi, " ").replace(/\\s+/g, " ").trim();
+      if (!submittedQuery) throw new Error("Enter a search query.");
+      // Firecrawl v2 accepts source names as strings. Avoid scrapeOptions here: search should return
+      // indexed result cards first, not require a scrape of every hit.
+      const response = await fetch("https://api.firecrawl.dev/v2/search", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + firecrawl.key, "Content-Type": "application/json" },
+        body: JSON.stringify({ query: submittedQuery, limit: plan.limit, sources: ["web"] })
+      });
       const data = await response.json();
-      if (!response.ok || data.success === false) throw new Error(data.error || "Firecrawl search failed (" + response.status + ").");
-      const groups = data.data ?? [];
-      const grouped = Array.isArray(groups)
-        ? groups
-        : Object.entries(groups).flatMap(([source, items]) =>
-            Array.isArray(items) ? items.map((item: SearchResult) => ({ ...item, _source: item._source || source })) : []
-          );
-      const found = [...grouped, ...(Array.isArray(data.images) ? data.images : []), ...(Array.isArray(data.news) ? data.news : [])] as SearchResult[];
+      if (!response.ok || data.success === false) {
+        const detail = typeof data.error === "string" ? data.error : data.error?.message || data.message;
+        throw new Error(detail || "Firecrawl search failed (" + response.status + ").");
+      }
+      const groups = data.data ?? {};
+      const found = Array.isArray(groups)
+        ? groups as SearchResult[]
+        : ["web", "news", "images"].flatMap(source => {
+            const items = groups[source] ?? data[source] ?? [];
+            return Array.isArray(items) ? items.map((item: SearchResult) => ({ ...item, _source: item._source || source })) : [];
+          }) as SearchResult[];
       setResults(found); setRaw(data); setHistory(prev => [prompt, ...prev.filter(x => x !== prompt)].slice(0, 12));
-      setNotice(found.length + " result" + (found.length === 1 ? "" : "s") + " returned.");
+      setNotice(found.length + " result" + (found.length === 1 ? "" : "s") + " returned. Query sent: " + submittedQuery);
     } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(null); }
   }
